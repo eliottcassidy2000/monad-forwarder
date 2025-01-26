@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"os"
 )
 
 const (
@@ -108,9 +109,22 @@ func lookupService(serviceName string) (string, int, error) {
 		serviceMap.Delete(serviceName)
 	}
 
+    // Get NOMAD_TOKEN from the environment
+    nomadToken := os.Getenv("NOMAD_TOKEN")
+    if nomadToken == "" {
+        return "", 0, fmt.Errorf("NOMAD_TOKEN environment variable is not set")
+    }
+
 	// Query Nomad master server for service id
 	serviceURL := fmt.Sprintf("%s/v1/service/%s", masterServerURL, serviceName)
-	resp, err := client.Get(serviceURL)
+    req, err := http.NewRequest("GET", serviceURL, nil)
+    if err != nil {
+        return "", 0, fmt.Errorf("failed to create request: %v", err)
+    }
+    // Add token to request headers
+    req.Header.Set("X-Nomad-Token", nomadToken)
+
+    resp, err := client.Do(req)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to query service: %v", err)
 	}
