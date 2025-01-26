@@ -16,21 +16,9 @@ const (
 	cacheTTL        = 30 * time.Second // Cache expiration time
 )
 
-type Allocation struct {
-	NodeID    string `json:"NodeID"`
-	TaskGroup string `json:"TaskGroup"`
-	Resources struct {
-		Networks []struct {
-			DynamicPorts []struct {
-				Label string `json:"Label"`
-				Value int    `json:"Value"`
-			} `json:"DynamicPorts"`
-		} `json:"Networks"`
-	} `json:"Resources"`
-}
-
-type Node struct {
+type Service struct {
 	Address string `json:"Address"`
+	Port int `json:"Port"`
 }
 
 type CacheEntry struct {
@@ -120,11 +108,11 @@ func lookupService(serviceName string) (string, int, error) {
 		serviceMap.Delete(serviceName)
 	}
 
-	// Query Nomad master server
-	allocationsURL := fmt.Sprintf("%s/v1/jobs/%s/allocations", masterServerURL, serviceName)
-	resp, err := client.Get(allocationsURL)
+	// Query Nomad master server for service id
+	serviceURL := fmt.Sprintf("%s/v1/service/%s", masterServerURL, serviceName)
+	resp, err := client.Get(serviceURL)
 	if err != nil {
-		return "", 0, fmt.Errorf("failed to query allocations: %v", err)
+		return "", 0, fmt.Errorf("failed to query service: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -132,47 +120,28 @@ func lookupService(serviceName string) (string, int, error) {
 		return "", 0, fmt.Errorf("unexpected response code: %d", resp.StatusCode)
 	}
 
-	var allocations []Allocation
-	if err := json.NewDecoder(resp.Body).Decode(&allocations); err != nil {
+	var services []Service
+	if err := json.NewDecoder(resp.Body).Decode(&services); err != nil {
 		return "", 0, fmt.Errorf("failed to decode response: %v", err)
 	}
 
-	if len(allocations) == 0 {
-		return "", 0, fmt.Errorf("no allocations found for service: %s", serviceName)
+	if len(services) == 0 {
+		return "", 0, fmt.Errorf("nothing found for service: %s", serviceName)
 	}
 
-	allocation := allocations[0]
-	nodeID := allocation.NodeID
-	nodeURL := fmt.Sprintf("%s/v1/nodes/%s", masterServerURL, nodeID)
-	nodeResp, err := client.Get(nodeURL)
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to query node: %v", err)
-	}
-	defer nodeResp.Body.Close()
+	service := services[0]
+	port := service.Port
+	address := service.Address
 
-	if nodeResp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("unexpected response code for node query: %d", nodeResp.StatusCode)
-	}
-
-	var node Node
-	if err := json.NewDecoder(nodeResp.Body).Decode(&node); err != nil {
-		return "", 0, fmt.Errorf("failed to decode node response: %v", err)
-	}
-
-	if len(allocation.Resources.Networks) == 0 || len(allocation.Resources.Networks[0].DynamicPorts) == 0 {
-		return "", 0, fmt.Errorf("no network information available")
-	}
-
-	port := allocation.Resources.Networks[0].DynamicPorts[0].Value
 	entry := CacheEntry{
-		Address:   node.Address,
+		Address:   address,
 		Port:      port,
 		ExpiresAt: time.Now().Add(cacheTTL),
 	}
 
 	// Store in cache
 	serviceMap.Store(serviceName, entry)
-	return node.Address, port, nil
+	return address, port, nil
 }
 
 func copyHeader(dst, src http.Header) {
