@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	masterServerURL = "http://<master-server-ip>:4646"
+	masterServerURL = "http://100.78.218.70:4646"
 	cacheTTL        = 30 * time.Second // Cache expiration time
 )
 
@@ -47,8 +47,8 @@ var (
 
 func main() {
 	http.HandleFunc("/", handler)
-	fmt.Println("Server listening on port 4646...")
-	if err := http.ListenAndServe(":4646", nil); err != nil {
+	fmt.Println("Server listening on port 4645...")
+	if err := http.ListenAndServe(":4645", nil); err != nil {
 		panic(err)
 	}
 }
@@ -68,15 +68,18 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serviceName := segments[0]
+	trimmedPath := "/" + strings.Join(segments[1:], "/") // Remove the service name from the path
+
 	serviceNode, servicePort, err := lookupService(serviceName)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Service lookup failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	targetURL := fmt.Sprintf("http://%s:%d%s", serviceNode, servicePort, r.URL.Path)
+	targetURL := fmt.Sprintf("http://%s:%d%s", serviceNode, servicePort, trimmedPath)
 	forwardRequest(w, r, targetURL)
 }
+
 
 func forwardRequest(w http.ResponseWriter, r *http.Request, target string) {
 	proxyURL, err := url.Parse(target)
