@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -139,10 +138,8 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
 		seenAllocs = append(seenAllocs, alloc.ID)
 		nj, ok := njcd[alloc.ID]
 		if !ok {
-			// Create a new entry if it doesn't exist
 			apiKey := os.Getenv("TS_API_KEY")
 			authKey, err := generateAuthKey(apiKey)
-			fmt.Println("NEEEEEEEEED to create new entry for alloc:", alloc.ID, alloc.Name, authKey)
 			if err != nil {
 				fmt.Println("Error generating auth key:", err)
 				os.Exit(1)
@@ -163,8 +160,6 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
 			toDelete, toAdd = diff2(nj.pml, alloc.AllocatedResources.Shared.Ports)
 		}
 		for _, pm := range toAdd {
-			fmt.Println("hello Portmapping:", pm)
-			// TCP listener
 			go func(pm api.PortMapping) {
 				ln, err := nj.server.Listen("tcp", fmt.Sprintf(":%d", pm.To))
 				if err != nil {
@@ -190,10 +185,9 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
 					}(conn)
 				}
 			}(pm)
-			//go nj.server.Listen("udp", fmt.Sprintf("%s:%d", pm.HostIP, pm.To))
 		}
 		for _, pm := range toDelete {
-			fmt.Println("bye Portmapping:", pm)
+			fmt.Println("todo", pm)
 		}
 	}
 	toDelete := diff(getMapKeys(njcd), seenAllocs)
@@ -332,129 +326,5 @@ func main() {
 		fmt.Println("njcd:", njcd)
 		testAllTCPPorts(njcd)
 		time.Sleep(10 * time.Second)
-	}
-}
-
-func handler(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-
-	if strings.HasPrefix(path, "/v1/") {
-		forwardRequest(w, r, masterServerURL)
-		return
-	}
-
-	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	if len(segments) < 1 {
-		http.Error(w, "Invalid request path", http.StatusBadRequest)
-		return
-	}
-
-	serviceName := segments[0]
-	trimmedPath := "/" + strings.Join(segments[1:], "/") // Remove the service name from the path
-
-	serviceNode, servicePort, err := lookupService(serviceName)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Service lookup failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	targetURL := fmt.Sprintf("http://%s:%d%s", serviceNode, servicePort, trimmedPath)
-	forwardRequest(w, r, targetURL)
-}
-
-
-func forwardRequest(w http.ResponseWriter, r *http.Request, target string) {
-	proxyURL, err := url.Parse(target)
-	if err != nil {
-		http.Error(w, "Invalid target URL", http.StatusInternalServerError)
-		return
-	}
-
-	req, err := http.NewRequest(r.Method, proxyURL.String(), r.Body)
-	if err != nil {
-		http.Error(w, "Failed to create request", http.StatusInternalServerError)
-		return
-	}
-
-	copyHeader(req.Header, r.Header)
-	resp, err := client.Do(req)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to forward request: %v", err), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	copyHeader(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
-}
-
-func lookupService(serviceName string) (string, int, error) {
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
-
-	// Check cache
-	if cached, found := serviceMap.Load(serviceName); found {
-		entry := cached.(CacheEntry)
-		if time.Now().Before(entry.ExpiresAt) {
-			return entry.Address, entry.Port, nil
-		}
-		// Remove expired entry
-		serviceMap.Delete(serviceName)
-	}
-
-    // Get NOMAD_TOKEN from the environment
-    nomadToken := os.Getenv("NOMAD_TOKEN")
-    if nomadToken == "" {
-        return "", 0, fmt.Errorf("NOMAD_TOKEN environment variable is not set")
-    }
-
-	// Query Nomad master server for service id
-	serviceURL := fmt.Sprintf("%s/v1/service/%s", masterServerURL, serviceName)
-    req, err := http.NewRequest("GET", serviceURL, nil)
-    if err != nil {
-        return "", 0, fmt.Errorf("failed to create request: %v", err)
-    }
-    // Add token to request headers
-    req.Header.Set("X-Nomad-Token", nomadToken)
-
-    resp, err := client.Do(req)
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to query service: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("unexpected response code: %d", resp.StatusCode)
-	}
-
-	var services []Service
-	if err := json.NewDecoder(resp.Body).Decode(&services); err != nil {
-		return "", 0, fmt.Errorf("failed to decode response: %v", err)
-	}
-
-	if len(services) == 0 {
-		return "", 0, fmt.Errorf("nothing found for service: %s", serviceName)
-	}
-
-	service := services[0]
-	port := service.Port
-	address := service.Address
-
-	entry := CacheEntry{
-		Address:   address,
-		Port:      port,
-		ExpiresAt: time.Now().Add(cacheTTL),
-	}
-
-	// Store in cache
-	serviceMap.Store(serviceName, entry)
-	return address, port, nil
-}
-
-func copyHeader(dst, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
 	}
 }
