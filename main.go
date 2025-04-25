@@ -126,7 +126,6 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
             nj.server = &tsnet.Server{Hostname: alloc.Name, Ephemeral: true, AuthKey: authKey, Dir: dir, Logf: log.Printf}
 			//nj.server = &tsnet.Server{Hostname: alloc.Name, Ephemeral: true, AuthKey: authKey, Dir: dir}
 			status, err := nj.server.Up(context.Background())
-			//fmt.Println("status:", status.TailscaleIPs[0])
 			if err != nil {
 				log.Fatalf("Error starting tsnet server: %v", err)
 			}
@@ -152,7 +151,6 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
         // start listeners for new port mappings
         for _, pm := range toAdd {
 			pm := pm // capture
-			//fmt.Println("starting proxy for port mapping:", pm)
             go startTCPProxy(nj.server, pm, nj.IP)
             go startUDPProxy(nj.server, pm, nj.IP)
         }
@@ -192,11 +190,6 @@ func difference(a, b []string) []string {
 
 // startTCPProxy forwards TCP traffic from tsnet to local host
 func startTCPProxy(server *tsnet.Server, pm api.PortMapping, ip netip.Addr) {
-	//ip4, err := computeIP(server)
-	// if err != nil {
-	// 	log.Printf("Error getting Tailscale IP: %v", err)
-	// 	return
-	// }
     ln, err := server.Listen("tcp", fmt.Sprintf("%s:%d",ip, pm.To))
     if err != nil {
         log.Printf("TCP listen error for %v: %v", pm, err)
@@ -225,11 +218,6 @@ func startTCPProxy(server *tsnet.Server, pm api.PortMapping, ip netip.Addr) {
 
 // startUDPProxy forwards UDP traffic from tsnet to local host
 func startUDPProxy(server *tsnet.Server, pm api.PortMapping, ip netip.Addr) {
-    // ip4, err := computeIP(server)
-	// if err != nil {
-	// 	log.Printf("Error getting Tailscale IP: %v", err)
-	// 	return
-	// }
     pconn, err := server.ListenPacket("udp", fmt.Sprintf("%s:%d",ip, pm.To))
     if err != nil {
         log.Printf("UDP listen error for %v: %v", pm, err)
@@ -281,14 +269,12 @@ func keepUpdated(client *api.Client, njcd map[string]*njc) {
 		fmt.Println("Error getting allocations:", err)
 		return
 	}
-	//fmt.Println("allocs:", allocs)
 	njcUpdate(allocs, njcd)
 }
 
 
 func testAllTCPPorts(njcd map[string]*njc) {
 	for allocID, nj := range njcd {
-		//ip4, _  := nj.server.TailscaleIPs()
 		ip4, err := computeIP(nj.server)
 		if err != nil {
 			fmt.Printf("Error getting Tailscale IP: %v\n", err)
@@ -369,15 +355,12 @@ func computeIP(s *tsnet.Server)(string, error) {
 
 	var tailscaleIP string
 	for _, addr := range self.TailscaleIPs {
-		//fmt.Printf("addr: %s\n", addr)
 		if addr.Is4() { // choose IPv4 address (e.g., 100.x.x.x)
 			tailscaleIP = addr.String()
 			break
 		}
 	}
-	//fmt.Printf("TAILSCALE IP: %s\n", tailscaleIP)
 	if tailscaleIP == "" {
-		//log.Fatalf("no IPv4 address found in Tailscale IPs")
 		return "", fmt.Errorf("no IPv4 address found in Tailscale IPs")
 	}
 	return tailscaleIP, nil
@@ -392,12 +375,9 @@ func main() {
 	fmt.Println("tailscale ip:", calculatedHostIP)
 	// Create a new Nomad client
 	cfg := api.DefaultConfig()
-	//cfg.Address = "http://death-star:4646"
-	//cfg.Address = "http://100.96.31.66:4646"
 	cfg.Address = "http://"+calculatedHostIP+":4646"
 	cfg.SecretID = os.Getenv("NOMAD_TOKEN")
 	client, err := api.NewClient(cfg)
-	//_, err = api.NewClient(cfg)
 	if err != nil {
 		fmt.Println("Error creating Nomad client:", err)
 		return
@@ -406,8 +386,6 @@ func main() {
 	njcd := make(map[string]*njc)
 	for {
 		keepUpdated(client, njcd)
-		//fmt.Println("njcd:", njcd)
-		//testAllTCPPorts(njcd)
-		time.Sleep(10 * time.Second)
+		time.Sleep(30 * time.Second)
 	}
 }
