@@ -5,23 +5,22 @@
 package main
 
 import (
-    "bytes"
-    //"context"
-    "encoding/json"
-    "fmt"
-    "io"
-    "log"
-    "net"
-    "net/http"
-    "os"
-    //"os/signal"
-    "path/filepath"
-    //"sync"
-    //"syscall"
-    "time"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
-    "github.com/hashicorp/nomad/api"
-    "tailscale.com/tsnet"
+	"time"
+
+	"github.com/hashicorp/nomad/api"
+	"tailscale.com/tsnet"
 )
 
 // njc bundles a tsnet server and its port mappings
@@ -32,6 +31,7 @@ type njc struct {
     Dir     string
     AuthKey string
     pml     []api.PortMapping
+	IP	    netip.Addr
 }
 
 // difference between two slices, reused from earlier
@@ -64,16 +64,25 @@ func diff2(a, b []api.PortMapping) (remove, add []api.PortMapping) {
 
 // generateAuthKey calls Tailscale API to create an auth key
 func generateAuthKey(apiKey string) (string, error) {
-    type authReq struct {
-        Reusable      bool     `json:"reusable"`
-        Ephemeral     bool     `json:"ephemeral"`
-        Preauthorized bool     `json:"preauthorized"`
-        Tags          []string `json:"tags,omitempty"`
-    }
+	type authReq struct {
+		Capabilities struct {
+			Devices struct {
+				Create struct {
+					Reusable      bool     `json:"reusable"`
+					Ephemeral     bool     `json:"ephemeral"`
+					Preauthorized bool     `json:"preauthorized"`
+					Tags          []string `json:"tags"`
+				} `json:"create"`
+			} `json:"devices"`
+		} `json:"capabilities"`
+	}
     type authResp struct { Key string `json:"key"` }
-
-    reqBody := authReq{Reusable: true, Ephemeral: true, Preauthorized: true, Tags: []string{"tag:nomad-service"}}
-    body, _ := json.Marshal(reqBody)
+	var reqBody authReq
+	reqBody.Capabilities.Devices.Create.Reusable = true
+	reqBody.Capabilities.Devices.Create.Ephemeral = true
+	reqBody.Capabilities.Devices.Create.Preauthorized = true
+	reqBody.Capabilities.Devices.Create.Tags = []string{"tag:nomad-service"}
+	body, _ := json.Marshal(reqBody)
     url := fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/-/keys?all=true")
     req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
     req.SetBasicAuth(apiKey, "")
@@ -83,6 +92,9 @@ func generateAuthKey(apiKey string) (string, error) {
     if err != nil {
         return "", err
     }
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to create auth key: %s", resp.Status)
+	}
     defer resp.Body.Close()
     var result authResp
     if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -90,6 +102,7 @@ func generateAuthKey(apiKey string) (string, error) {
     }
     return result.Key, nil
 }
+
 
 // njcUpdate reconciles the njcd map with current allocations
 func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
@@ -111,6 +124,13 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
             nj = &njc{Dir: dir, AuthKey: authKey, pml: alloc.AllocatedResources.Shared.Ports}
             // create tsnet server
             nj.server = &tsnet.Server{Hostname: alloc.Name, Ephemeral: true, AuthKey: authKey, Dir: dir, Logf: log.Printf}
+			//nj.server = &tsnet.Server{Hostname: alloc.Name, Ephemeral: true, AuthKey: authKey, Dir: dir}
+			status, err := nj.server.Up(context.Background())
+			//fmt.Println("status:", status.TailscaleIPs[0])
+			if err != nil {
+				log.Fatalf("Error starting tsnet server: %v", err)
+			}
+			nj.IP = status.TailscaleIPs[0]
             njcd[alloc.ID] = nj
             toAdd = nj.pml
         } else {
@@ -131,9 +151,10 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
 
         // start listeners for new port mappings
         for _, pm := range toAdd {
-            pm := pm // capture
-            go startTCPProxy(nj.server, pm)
-            go startUDPProxy(nj.server, pm)
+			pm := pm // capture
+			//fmt.Println("starting proxy for port mapping:", pm)
+            go startTCPProxy(nj.server, pm, nj.IP)
+            go startUDPProxy(nj.server, pm, nj.IP)
         }
         nj.pml = alloc.AllocatedResources.Shared.Ports
     }
@@ -170,9 +191,13 @@ func difference(a, b []string) []string {
 }
 
 // startTCPProxy forwards TCP traffic from tsnet to local host
-func startTCPProxy(server *tsnet.Server, pm api.PortMapping) {
-	ip4, _ := server.TailscaleIPs()
-    ln, err := server.Listen("tcp", fmt.Sprintf("%s:%d",ip4, pm.To))
+func startTCPProxy(server *tsnet.Server, pm api.PortMapping, ip netip.Addr) {
+	//ip4, err := computeIP(server)
+	// if err != nil {
+	// 	log.Printf("Error getting Tailscale IP: %v", err)
+	// 	return
+	// }
+    ln, err := server.Listen("tcp", fmt.Sprintf("%s:%d",ip, pm.To))
     if err != nil {
         log.Printf("TCP listen error for %v: %v", pm, err)
         return
@@ -199,9 +224,13 @@ func startTCPProxy(server *tsnet.Server, pm api.PortMapping) {
 }
 
 // startUDPProxy forwards UDP traffic from tsnet to local host
-func startUDPProxy(server *tsnet.Server, pm api.PortMapping) {
-	ip4, _ := server.TailscaleIPs()
-    pconn, err := server.ListenPacket("udp", fmt.Sprintf("%s:%d", ip4, pm.To))
+func startUDPProxy(server *tsnet.Server, pm api.PortMapping, ip netip.Addr) {
+    // ip4, err := computeIP(server)
+	// if err != nil {
+	// 	log.Printf("Error getting Tailscale IP: %v", err)
+	// 	return
+	// }
+    pconn, err := server.ListenPacket("udp", fmt.Sprintf("%s:%d",ip, pm.To))
     if err != nil {
         log.Printf("UDP listen error for %v: %v", pm, err)
         return
@@ -252,16 +281,17 @@ func keepUpdated(client *api.Client, njcd map[string]*njc) {
 		fmt.Println("Error getting allocations:", err)
 		return
 	}
-	fmt.Println("allocs:", allocs)
+	//fmt.Println("allocs:", allocs)
 	njcUpdate(allocs, njcd)
 }
 
 
 func testAllTCPPorts(njcd map[string]*njc) {
 	for allocID, nj := range njcd {
-		ip4, _  := nj.server.TailscaleIPs()
-		if  !ip4.IsValid() {
-			fmt.Printf("Error getting Tailscale IPs for %s: %v\n", allocID, ip4)
+		//ip4, _  := nj.server.TailscaleIPs()
+		ip4, err := computeIP(nj.server)
+		if err != nil {
+			fmt.Printf("Error getting Tailscale IP: %v\n", err)
 			return
 		}
 		for _, pm := range nj.pml {
@@ -311,6 +341,48 @@ func getTailscaleIP() (string, error) {
 	return "", fmt.Errorf("Tailscale IP not found")
 }
 
+func computeIP(s *tsnet.Server)(string, error) {
+	if err := s.Start(); err != nil {
+		log.Fatalf("failed to start tsnet server: %v", err)
+		return "", err
+	}
+	defer s.Close()
+
+	client, err := s.LocalClient()
+	if err != nil {
+		log.Fatalf("failed to get local client: %v", err)
+		return "", err
+	}
+
+	ctx := context.Background()
+	status, err := client.Status(ctx)
+	if err != nil {
+		log.Fatalf("failed to get status: %v", err)
+		return "", err
+	}
+
+	self := status.Self
+	if self == nil {
+		log.Fatalf("status.Self is nil")
+		return "", fmt.Errorf("status.Self is nil")
+	}
+
+	var tailscaleIP string
+	for _, addr := range self.TailscaleIPs {
+		//fmt.Printf("addr: %s\n", addr)
+		if addr.Is4() { // choose IPv4 address (e.g., 100.x.x.x)
+			tailscaleIP = addr.String()
+			break
+		}
+	}
+	//fmt.Printf("TAILSCALE IP: %s\n", tailscaleIP)
+	if tailscaleIP == "" {
+		//log.Fatalf("no IPv4 address found in Tailscale IPs")
+		return "", fmt.Errorf("no IPv4 address found in Tailscale IPs")
+	}
+	return tailscaleIP, nil
+}
+
 func main() {
 	calculatedHostIP, err := getTailscaleIP()
 	if err != nil {
@@ -320,11 +392,12 @@ func main() {
 	fmt.Println("tailscale ip:", calculatedHostIP)
 	// Create a new Nomad client
 	cfg := api.DefaultConfig()
-	cfg.Address = "http://death-star:4646"
+	//cfg.Address = "http://death-star:4646"
 	//cfg.Address = "http://100.96.31.66:4646"
-	//cfg.Address = "http://"calculatedHostIP+":4646"
+	cfg.Address = "http://"+calculatedHostIP+":4646"
 	cfg.SecretID = os.Getenv("NOMAD_TOKEN")
 	client, err := api.NewClient(cfg)
+	//_, err = api.NewClient(cfg)
 	if err != nil {
 		fmt.Println("Error creating Nomad client:", err)
 		return
@@ -333,8 +406,8 @@ func main() {
 	njcd := make(map[string]*njc)
 	for {
 		keepUpdated(client, njcd)
-		fmt.Println("njcd:", njcd)
-		testAllTCPPorts(njcd)
+		//fmt.Println("njcd:", njcd)
+		//testAllTCPPorts(njcd)
 		time.Sleep(10 * time.Second)
 	}
 }
