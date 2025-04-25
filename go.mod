@@ -6,7 +6,6 @@ toolchain go1.24.2
 
 require (
 	github.com/hashicorp/nomad/api v0.0.0-20250424164818-374e987b9ba2
-	github.com/traefik/yaegi v0.16.1
 	tailscale.com v1.82.5
 )
 

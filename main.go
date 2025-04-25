@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"slices"
 
 	"github.com/hashicorp/nomad/api"
 	"tailscale.com/tsnet"
@@ -123,6 +124,19 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
             dir := filepath.Join(os.TempDir(), "tsnet-"+alloc.ID)
             nj = &njc{Dir: dir, AuthKey: authKey, pml: alloc.AllocatedResources.Shared.Ports}
             // create tsnet server
+			fm := os.Getenv("FAKE_MONAD")
+			if fm == "true" {
+				fmt.Printf("FAKE MONAD. dir: %s, name: %s, authKey: %s\n", dir, alloc.Name, authKey)
+				continue
+			}
+			wrong := []string{"monad-forwarderA.monad-forwarderB[0]", "monad-forwarder.monad-forwarder[0]"}
+			//right := []string{"hello-world.web[0]","mysql.mysql[0]", "dokcer-test.dokcer-test[0]"}
+			if slices.Contains(wrong, alloc.Name) {
+				fmt.Printf("SKIPPING. dir: %s, name: %s, authKey: %s\n", dir, alloc.Name, authKey)
+				continue
+			}else{
+				fmt.Printf("CrEaTiNg. dir: %s, name: %s, authKey: %s\n", dir, alloc.Name, authKey)
+			}
             nj.server = &tsnet.Server{Hostname: alloc.Name, Ephemeral: true, AuthKey: authKey, Dir: dir, Logf: log.Printf}
 			//nj.server = &tsnet.Server{Hostname: alloc.Name, Ephemeral: true, AuthKey: authKey, Dir: dir}
 			status, err := nj.server.Up(context.Background())
