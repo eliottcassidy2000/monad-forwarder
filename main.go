@@ -375,7 +375,8 @@ func main() {
 	fmt.Println("tailscale ip:", calculatedHostIP)
 	// Create a new Nomad client
 	cfg := api.DefaultConfig()
-	cfg.Address = "http://"+calculatedHostIP+":4646"
+	//cfg.Address = "http://"+calculatedHostIP+":4646"
+	cfg.Address = "http://127.0.0.1:4646"
 	//cfg.Address = "http://death-star:4646"
 	cfg.SecretID = os.Getenv("NOMAD_TOKEN")
 	client, err := api.NewClient(cfg)
