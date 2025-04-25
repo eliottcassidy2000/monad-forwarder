@@ -78,7 +78,7 @@ func generateAuthKey(apiKey string) (string, error) {
 	}
     type authResp struct { Key string `json:"key"` }
 	var reqBody authReq
-	reqBody.Capabilities.Devices.Create.Reusable = true
+	reqBody.Capabilities.Devices.Create.Reusable = false
 	reqBody.Capabilities.Devices.Create.Ephemeral = true
 	reqBody.Capabilities.Devices.Create.Preauthorized = true
 	reqBody.Capabilities.Devices.Create.Tags = []string{"tag:nomad-service"}
@@ -376,6 +376,7 @@ func main() {
 	// Create a new Nomad client
 	cfg := api.DefaultConfig()
 	cfg.Address = "http://"+calculatedHostIP+":4646"
+	//cfg.Address = "http://death-star:4646"
 	cfg.SecretID = os.Getenv("NOMAD_TOKEN")
 	client, err := api.NewClient(cfg)
 	if err != nil {
