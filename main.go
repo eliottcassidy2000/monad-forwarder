@@ -116,30 +116,35 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
         var toAdd, toRemove []api.PortMapping
 
         if !exists {
+			dir := filepath.Join(os.TempDir(), "tsnet-"+alloc.Name)
+			wrong := []string{"monad-forwarder.monad-forwarder[0]", "monad-forwarder0.monad-forwarder0[0]", "monad-forwarder1.monad-forwarder1[0]","monad-forwarder2.monad-forwarder2[0]"}
+			//right := []string{"hello-world.web[0]","mysql.mysql[0]", "dokcer-test.dokcer-test[0]"}
+			if slices.Contains(wrong, alloc.Name) {
+				fmt.Printf("SKIPPING. dir: %s, name: %s, pm: %s\n", dir, alloc.Name, alloc.AllocatedResources.Shared.Ports)
+				continue
+			}else{
+				fmt.Printf("CrEaTiNg. dir: %s, name: %s, pm: %s\n", dir, alloc.Name, alloc.AllocatedResources.Shared.Ports)
+			}
             // new allocation: generate key and set up server
             authKey, err := generateAuthKey(apiKey)
             if err != nil {
                 log.Fatalf("Error generating auth key: %v", err)
             }
-            dir := filepath.Join(os.TempDir(), "tsnet-"+alloc.ID)
             nj = &njc{Dir: dir, AuthKey: authKey, pml: alloc.AllocatedResources.Shared.Ports}
             // create tsnet server
 			fm := os.Getenv("FAKE_MONAD")
 			if fm == "true" {
-				fmt.Printf("FAKE MONAD. dir: %s, name: %s, authKey: %s\n", dir, alloc.Name, authKey)
+				fmt.Printf("FAKE MONAD. dir: %s, name: %s, pm: %s\n", dir, alloc.Name, alloc.AllocatedResources.Shared.Ports)
 				continue
-			}
-			wrong := []string{"monad-forwarderA.monad-forwarderB[0]", "monad-forwarder.monad-forwarder[0]"}
-			//right := []string{"hello-world.web[0]","mysql.mysql[0]", "dokcer-test.dokcer-test[0]"}
-			if slices.Contains(wrong, alloc.Name) {
-				fmt.Printf("SKIPPING. dir: %s, name: %s, authKey: %s\n", dir, alloc.Name, authKey)
-				continue
-			}else{
-				fmt.Printf("CrEaTiNg. dir: %s, name: %s, authKey: %s\n", dir, alloc.Name, authKey)
 			}
             nj.server = &tsnet.Server{Hostname: alloc.Name, Ephemeral: true, AuthKey: authKey, Dir: dir, Logf: log.Printf}
 			//nj.server = &tsnet.Server{Hostname: alloc.Name, Ephemeral: true, AuthKey: authKey, Dir: dir}
-			status, err := nj.server.Up(context.Background())
+			ctx := context.Background()
+			err = cleanupDuplicateHostnames(ctx, alloc.Name, apiKey)
+			if err != nil {
+				panic(err)
+			}
+			status, err := nj.server.Up(ctx)
 			if err != nil {
 				log.Fatalf("Error starting tsnet server: %v", err)
 			}
@@ -149,6 +154,7 @@ func njcUpdate(allocs []*api.Allocation, njcd map[string]*njc) {
         } else {
             // existing: compute diff in port mappings
             toRemove, toAdd = diff2(nj.pml, alloc.AllocatedResources.Shared.Ports)
+			nj.pml = alloc.AllocatedResources.Shared.Ports
         }
 
         // teardown removed port mappings by restarting server
@@ -404,4 +410,86 @@ func main() {
 		keepUpdated(client, njcd)
 		time.Sleep(30 * time.Second)
 	}
+}
+
+
+
+const (             // your tailnet name
+	apiKey      = "tskey-abcdef1234567890abcdef"  // your Tailscale API key
+)
+
+type Device struct {
+	ID        string    `json:"id"`
+	Hostname  string    `json:"hostname"`
+	CreatedAt time.Time `json:"created"`
+	LastSeen  time.Time `json:"lastSeen"`
+}
+
+func cleanupDuplicateHostnames(ctx context.Context, hostname string, apiKey string) error {
+	url := fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/-/devices")
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(apiKey, "")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error: %s - %s", resp.Status, body)
+	}
+
+	var response struct {
+		Devices []Device `json:"devices"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&response)
+	if err != nil {
+		return err
+	}
+
+	var matches []Device
+	for _, device := range response.Devices {
+		if device.Hostname == hostname {
+			matches = append(matches, device)
+		}
+	}
+
+	if len(matches) <= 0 {
+		fmt.Println("No existing found for hostname:", hostname)
+		return nil
+	}
+
+	// // Sort devices by LastSeen DESC, newest first
+	// sort.Slice(matches, func(i, j int) bool {
+	// 	return matches[i].LastSeen.After(matches[j].LastSeen)
+	// })
+
+	// ddelte all matches
+	for _, oldDevice := range matches[0:] {
+		fmt.Println("Deleting stale device ID:", oldDevice.ID)
+		delUrl := fmt.Sprintf("https://api.tailscale.com/api/v2/device/%s", oldDevice.ID)
+		delReq, _ := http.NewRequestWithContext(ctx, "DELETE", delUrl, nil)
+		delReq.SetBasicAuth(apiKey, "")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		delResp, err := http.DefaultClient.Do(delReq)
+		if err != nil {
+			return fmt.Errorf("error deleting device ID %s: %w", oldDevice.ID, err)
+		}
+		delResp.Body.Close()
+		if delResp.StatusCode != http.StatusOK && delResp.StatusCode != http.StatusNoContent {
+			body, _ := io.ReadAll(delResp.Body)
+			return fmt.Errorf("failed to delete device %s: %s", oldDevice.ID, body)
+		}
+	}
+
+	fmt.Printf("Cleanup complete. Kept most recent device for hostname: %s\n", hostname)
+	return nil
 }
