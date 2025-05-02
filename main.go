@@ -425,6 +425,44 @@ type Device struct {
 	LastSeen  time.Time `json:"lastSeen"`
 }
 
+// UpdateNomadVariable safely updates or adds keys in a Nomad variable without overwriting existing keys.
+func UpdateNomadVariable(client *api.Client, varPath string, updates map[string]interface{}) error {
+
+	// Try to read the existing variable
+	variable, _, err := client.Variables().Read(varPath, nil)
+	if err != nil {
+		if err == api.ErrVariablePathNotFound {
+			// Variable doesn't exist; create a new one
+			variable = &api.Variable{
+				Path:  varPath,
+				Items: api.VariableItems{},
+			}
+		} else {
+			return fmt.Errorf("failed to read variable: %w", err)
+		}
+	}
+
+	// Apply updates to the existing items
+	if variable.Items == nil {
+		variable.Items = api.VariableItems{}
+	}
+	for k, v := range updates {
+		if strValue, ok := v.(string); ok {
+			variable.Items[k] = strValue
+		} else {
+			return fmt.Errorf("value for key %s is not a string", k)
+		}
+	}
+
+	// Write the updated variable back
+	_, _, err = client.Variables().Update(variable, nil)
+	if err != nil {
+		return fmt.Errorf("failed to update variable: %w", err)
+	}
+
+	return nil
+}
+
 func cleanupDuplicateHostnames(ctx context.Context, hostname string, apiKey string) error {
 	url := fmt.Sprintf("https://api.tailscale.com/api/v2/tailnet/-/devices")
 
