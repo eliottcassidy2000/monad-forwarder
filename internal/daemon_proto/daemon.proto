@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+// Package name for generated Go code (imported as pb)
+package daemon;
+option go_package = "github.com/eliottcassidy2000/monad-forwarder/internal/daemon_proto";
+
+// The Daemon service provides methods to Allocate and Release
+// tsnet instances keyed by node_id (e.g., container or VM ID).
+service Daemon {
+  // Allocate starts (or returns) a tsnet.Server for node_id
+  // and returns the assigned IPv4 address and prefix length.
+  rpc Allocate(AllocateRequest) returns (AllocateResponse);
+  // Release stops and removes state for the tsnet.Server.
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+}
+
+// AllocateRequest identifies the node for which to allocate IP.
+message AllocateRequest {
+  string node_id = 1;
+}
+// AllocateResponse returns the IPv4 address and CIDR prefix.
+message AllocateResponse {
+  string ip = 1;        // e.g., "100.64.0.5"
+  uint32 prefix = 2;     // e.g., 32
+}
+// ReleaseRequest identifies the node to shut down.
+message ReleaseRequest {
+  string node_id = 1;
+}
+// ReleaseResponse is empty (acknowledgment).
+message ReleaseResponse {}
